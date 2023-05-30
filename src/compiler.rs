@@ -64,7 +64,6 @@ pub fn compile_expr(
     fb: &mut FunctionBuilder,
     tab: &FunctionTable,
 ) -> Vec<waffle::Value> {
-    // println!("compile_expr: {:?}", expr);
     match expr {
         Expr::Literal(l) => compile_literal(l, fb, tab),
         Expr::FunctionCall(fc) => {
@@ -103,14 +102,12 @@ pub fn compile_literal(
     fb: &mut FunctionBuilder,
     tab: &FunctionTable,
 ) -> Vec<waffle::Value> {
-    // println!("compile_literal: {:?}", l);
     match l {
         LiteralExpr::Int(i) => vec![fb.build_i64(*i)],
         LiteralExpr::Str(s) => {
             let (mem, addr, len) = fb.mb.alloc(s.as_bytes());
             let addr = fb.build_i32(addr as i32);
             let len = fb.build_i32(len as i32);
-            // fb.build_join(&[addr, len])
             vec![addr, len]
         }
         l_ => unimplemented!(),

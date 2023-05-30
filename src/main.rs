@@ -193,5 +193,12 @@ fn run(module: &waffle::Module, name: &str) -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    println!(r#"
+    Welcome to FemtoLisp!
+    Possible syntax:
+        (+ 1 2)
+        (* 3 (/ 4 2))
+        (display "Hello")
+    "#);
     repl()
 }
