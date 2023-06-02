@@ -10,6 +10,8 @@ pub enum Expr {
     LetBinding(LetBindingExpr),
     If(IfExpr),
     Lambda(LambdaExpr),
+    FunctionDef(FunctionDefExpr),
+    ValueDef(ValueDefExpr),
 }
 
 impl Expr {
@@ -32,6 +34,14 @@ impl Expr {
                 .iter()
                 .map(|expr| ExprNode::new(expr.clone()))
                 .collect(),
+        })
+    }
+
+    pub fn if_(cond: Expr, cons: Expr, alt: Expr) -> Expr {
+        Expr::If(IfExpr {
+            conditional: ExprNode::new(cond),
+            consequent: ExprNode::new(cons),
+            alternate: ExprNode::new(alt),
         })
     }
 
@@ -169,3 +179,18 @@ pub struct IfExpr {
 
 #[derive(Debug, Clone, Hash)]
 pub struct LambdaExpr {}
+
+
+#[derive(Debug, Clone, Hash)]
+pub struct FunctionDefExpr {
+    pub name: String,
+    pub args: Vec<(String, Type)>,
+    pub body: ExprNode,
+}
+
+#[derive(Debug, Clone, Hash)]
+pub struct ValueDefExpr {
+    pub name: String,
+    pub typ: Type,
+    pub body: ExprNode,
+}
