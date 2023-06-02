@@ -5,12 +5,19 @@ use crate::module_builder::*;
 use crate::types::*;
 use anyhow::Result;
 
-pub enum ExternFunction {
-    Import(waffle::Func, waffle::SignatureData),
-    Intrinsic(Box<dyn Intrinsic>),
+#[derive(Debug, Clone)]
+pub enum Function {
+    Import(waffle::Func),
+    Intrinsic(std::rc::Rc<dyn Intrinsic>),
+    User(waffle::Func),
 }
 
-pub type FunctionTable = std::collections::HashMap<String, ExternFunction>;
+pub type FunctionTable = std::collections::HashMap<String, Function>;
+
+pub enum Statement {
+    Expr(waffle::Func),
+    Def(String, waffle::Func),
+}
 
 pub fn compile_statement<'a>(
     expr: &Expr,
@@ -19,7 +26,7 @@ pub fn compile_statement<'a>(
     tab: &FunctionTable,
 ) -> Result<waffle::Func> {
     // println!("compile_statement: {:?}", expr);
-    let ret = get_return_type(expr, tab);
+    let ret = get_return_type(expr, tab, &mb.module);
 
     // let sig_data = waffle::SignatureData {
     //     params: vec![],
@@ -41,18 +48,26 @@ pub fn compile_statement<'a>(
     Ok(mb.module.funcs.push(b))
 }
 
-pub fn get_return_type(expr: &Expr, table: &FunctionTable) -> Vec<waffle::Type> {
+pub fn get_return_type(
+    expr: &Expr,
+    table: &FunctionTable,
+    module: &waffle::Module,
+) -> Vec<waffle::Type> {
     match expr {
         Expr::Literal(l) => match l {
             LiteralExpr::Int(_) => vec![waffle::Type::I32],
             LiteralExpr::Str(_) => vec![waffle::Type::I32, waffle::Type::I32],
             _ => unimplemented!(),
         },
-        Expr::FunctionCall(fc) => get_return_type(&*fc.function, table),
+        Expr::FunctionCall(fc) => get_return_type(&*fc.function, table, module),
         Expr::Identifier(i) => match &table[&*i] {
-            ExternFunction::Import(func, sig) => sig.returns.clone(),
-            ExternFunction::Intrinsic(i) => i.ret(),
+            Function::Import(f) | Function::User(f) => module.signatures[module.funcs[*f].sig()].returns.clone(),
+            Function::Intrinsic(i) => i.ret(),
         },
+        Expr::If(IfExpr {conditional, consequent
+        , alternate}) => {
+            get_return_type(&consequent, table, module)
+        }
         _ => {
             unimplemented!()
         }
@@ -73,27 +88,43 @@ pub fn compile_expr(
             };
 
             match &tab[&*iden] {
-                ExternFunction::Import(f, sig) => {
+                Function::Import(f) | Function::User(f) => {
                     let args = fc
                         .arguments
                         .iter()
                         .map(|e| compile_expr(e, fb, tab))
                         .flatten()
                         .collect::<Vec<_>>();
-                    vec![fb.build_call(*f, sig.clone(), args.as_slice())]
+                    vec![fb.build_call(*f, args.as_slice())]
                 }
-                ExternFunction::Intrinsic(intr) => {
+                Function::Intrinsic(intr) => {
                     let args = fc
                         .arguments
                         .iter()
                         .map(|e| compile_expr(e, fb, tab))
                         .flatten()
                         .collect::<Vec<_>>();
-                    vec![intr.call(args.as_slice(), fb)]
+                    vec![intr.call(fb, args.as_slice())]
                 }
             }
         }
-        _ => unimplemented!(),
+        Expr::If(IfExpr {conditional, consequent, alternate}) => {
+            let cond = compile_expr(conditional, fb, tab);
+            let consequent_block = fb.add_block(&[]);
+            let alternative_block = fb.add_block(&[]);
+            let typ = get_return_type(consequent.as_ref(), tab, &fb.mb.module);
+            let result_block = fb.add_block(&typ);
+            fb.build_condbr(cond[0], (consequent_block, &[]), (alternative_block, &[]));
+            fb.focus_block(consequent_block);
+            let consequent = compile_expr(consequent, fb, tab);
+            fb.build_br(result_block, &consequent);
+            fb.focus_block(alternative_block);
+            let alternate = compile_expr(alternate, fb, tab);
+            fb.build_br(result_block, &alternate);
+            fb.focus_block(result_block);
+            fb.body.blocks[fb.current_block()].params.iter().map(|(_, v)| *v).collect::<Vec<_>>()
+        }
+        _ => unimplemented!("compile_expr: {:?}", expr),
     }
 }
 
@@ -103,9 +134,10 @@ pub fn compile_literal(
     tab: &FunctionTable,
 ) -> Vec<waffle::Value> {
     match l {
-        LiteralExpr::Int(i) => vec![fb.build_i64(*i)],
+        LiteralExpr::Int(i) => vec![fb.build_i32(*i as i32)],
         LiteralExpr::Str(s) => {
-            let (mem, addr, len) = fb.mb.alloc(s.as_bytes());
+            let text = s.replace("\\n", "\n");
+            let (mem, addr, len) = fb.mb.alloc(text.as_bytes());
             let addr = fb.build_i32(addr as i32);
             let len = fb.build_i32(len as i32);
             vec![addr, len]

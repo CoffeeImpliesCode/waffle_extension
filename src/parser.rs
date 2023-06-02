@@ -28,6 +28,7 @@ pub enum ExprToken {
     #[token("/")]
     Slash,
     #[token("=")]
+    #[token("==")]
     Eq,
     #[token("def")]
     Def,
@@ -41,9 +42,9 @@ pub enum ExprToken {
     True,
     #[token("#f")]
     False,
-    #[regex(r#"[0-9]+"#)]
+    #[regex(r#"[+-]?[0-9]+"#)]
     Int,
-    #[regex(r#"[a-zA-Z_][a-zA-Z0-9_]*"#)]
+    #[regex(r#"[#a-zA-Z_][#a-zA-Z0-9_]*"#)]
     Symbol,
     #[regex(r#"'[a-zA-Z0-9_]+"#)]
     Atom,
@@ -274,6 +275,10 @@ pub fn parse_expr(c: &mut Cursor) -> Result<expr::Expr> {
         [Slash, ..] => {
             c.consume(1);
             Ok(expr::Expr::Identifier("/".into()))
+        }
+        [Eq, ..] => {
+            c.consume(1);
+            Ok(expr::Expr::Identifier("==".into()))
         }
         [LParen, Def, ..] => {
             todo!()

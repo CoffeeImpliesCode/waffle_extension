@@ -1,10 +1,12 @@
 use anyhow::*;
+use waffle::wasmparser::TagType;
 
-use crate::module_builder::ModuleBuilder;
+use crate::{module_builder::ModuleBuilder, intrinsics::Intrinsic};
 
 pub struct FunctionBuilder<'a> {
     pub mb: &'a mut ModuleBuilder,
     pub signature: waffle::Signature,
+    pub id: Option<waffle::Func>,
     pub name: Option<String>,
     pub body: waffle::FunctionBody,
     pub current_block: waffle::Block,
@@ -23,6 +25,26 @@ impl<'a> FunctionBuilder<'a> {
         Self {
             mb,
             signature,
+            name,
+            id: None,
+            body,
+            current_block,
+        }
+    }
+
+    pub fn from_function(
+        mb: &'a mut ModuleBuilder,
+        func: waffle::Func,
+        name: Option<impl Into<String>>,
+    ) -> Self {
+        let signature = mb.module.funcs[func].sig();
+        let name = name.map(|s| s.into());
+        let body = waffle::FunctionBody::new(&mb.module, signature);
+        let current_block = body.entry;
+        Self {
+            mb,
+            signature,
+            id: Some(func),
             name,
             body,
             current_block,
@@ -65,14 +87,70 @@ impl<'a> FunctionBuilder<'a> {
         b
     }
 
+    pub fn build_unary_memop(
+        &mut self,
+        op: waffle::Operator,
+        arg: waffle::Value,
+        ret: Option<waffle::Type>,
+    ) -> waffle::Value {
+        let arg = self.body.arg_pool.single(arg);
+        let ty: waffle::pool::ListRef<waffle::Type> = if let Some(ret) = ret {
+            self.body.single_type_list(ret)
+        } else {
+            Default::default()
+        };
+        let v = self.body.add_value(waffle::ValueDef::Operator(op, arg, ty));
+        self.body.append_to_block(self.current_block, v);
+        v
+    }
+
+    pub fn memarg(&self, align: u32, offset: u32) -> waffle::MemoryArg {
+        waffle::MemoryArg {
+            align,
+            offset,
+            memory: self.mb.module.memories.iter().next().unwrap(),
+        }
+    }
+
+    pub fn build_binary_memop(
+        &mut self,
+        op: waffle::Operator,
+        a: waffle::Value,
+        b: waffle::Value,
+    ) -> waffle::Value {
+        let arg = self.body.arg_pool.double(a, b);
+        let ty: waffle::pool::ListRef<waffle::Type> = Default::default();
+        let v = self.body.add_value(waffle::ValueDef::Operator(op, arg, ty));
+        self.body.append_to_block(self.current_block, v);
+        v
+    }
+
+    pub fn build_nonary(&mut self, op: waffle::Operator, ret: &[waffle::Type]) -> waffle::Value {
+        let arg = Default::default();
+        let ty = match ret {
+            [] => Default::default(),
+            [ty] => self.body.single_type_list(*ty),
+            [tys @ ..] => self.body.type_pool.from_iter(tys.iter().copied()),
+        };
+
+        let v = self.body.add_value(waffle::ValueDef::Operator(op, arg, ty));
+        self.body.append_to_block(self.current_block, v);
+        v
+    }
+
     pub fn build_unary(
         &mut self,
         op: waffle::Operator,
-        ret: waffle::Type,
         arg: waffle::Value,
+        ret: &[waffle::Type],
     ) -> waffle::Value {
         let arg = self.body.arg_pool.single(arg);
-        let ty = self.body.single_type_list(ret);
+        // let ty = self.body.single_type_list(ret);
+        let ty = match ret {
+            [] => Default::default(),
+            [ty] => self.body.single_type_list(*ty),
+            [tys @ ..] => self.body.type_pool.from_iter(tys.iter().copied()),
+        };
         let v = self.body.add_value(waffle::ValueDef::Operator(op, arg, ty));
         self.body.append_to_block(self.current_block, v);
         v
@@ -81,12 +159,16 @@ impl<'a> FunctionBuilder<'a> {
     pub fn build_binary(
         &mut self,
         op: waffle::Operator,
-        ret: waffle::Type,
         a: waffle::Value,
         b: waffle::Value,
+        ret: &[waffle::Type],
     ) -> waffle::Value {
         let args = self.body.arg_pool.double(a, b);
-        let ty = self.body.single_type_list(ret);
+        let ty = match ret {
+            [] => Default::default(),
+            [ty] => self.body.single_type_list(*ty),
+            [tys @ ..] => self.body.type_pool.from_iter(tys.iter().copied()),
+        };
 
         let v = self
             .body
@@ -98,13 +180,17 @@ impl<'a> FunctionBuilder<'a> {
     pub fn build_ternary(
         &mut self,
         op: waffle::Operator,
-        ret: waffle::Type,
         a: waffle::Value,
         b: waffle::Value,
         c: waffle::Value,
+        ret: &[waffle::Type],
     ) -> waffle::Value {
         let args = self.body.arg_pool.triple(a, b, c);
-        let ty = self.body.single_type_list(ret);
+        let ty = match ret {
+            [] => Default::default(),
+            [ty] => self.body.single_type_list(*ty),
+            [tys @ ..] => self.body.type_pool.from_iter(tys.iter().copied()),
+        };
 
         let v = self
             .body
@@ -114,27 +200,35 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     pub fn build_addi32(&mut self, a: waffle::Value, b: waffle::Value) -> waffle::Value {
-        self.build_binary(waffle::Operator::I32Add, waffle::Type::I32, a, b)
+        self.build_binary(waffle::Operator::I32Add, a, b, &[waffle::Type::I32])
     }
 
     pub fn build_subi32(&mut self, a: waffle::Value, b: waffle::Value) -> waffle::Value {
-        self.build_binary(waffle::Operator::I32Sub, waffle::Type::I32, a, b)
+        self.build_binary(waffle::Operator::I32Sub, a, b, &[waffle::Type::I32])
+    }
+
+    pub fn build_muli32(&mut self, a: waffle::Value, b: waffle::Value) -> waffle::Value {
+        self.build_binary(waffle::Operator::I32Mul, a, b, &[waffle::Type::I32])
+    }
+
+    pub fn build_divi32(&mut self, a: waffle::Value, b: waffle::Value) -> waffle::Value {
+        self.build_binary(waffle::Operator::I32DivS, a, b, &[waffle::Type::I32])
     }
 
     pub fn build_addi64(&mut self, a: waffle::Value, b: waffle::Value) -> waffle::Value {
-        self.build_binary(waffle::Operator::I64Add, waffle::Type::I64, a, b)
+        self.build_binary(waffle::Operator::I64Add, a, b, &[waffle::Type::I64])
     }
 
     pub fn build_subi64(&mut self, a: waffle::Value, b: waffle::Value) -> waffle::Value {
-        self.build_binary(waffle::Operator::I64Sub, waffle::Type::I64, a, b)
+        self.build_binary(waffle::Operator::I64Sub, a, b, &[waffle::Type::I64])
     }
 
     pub fn build_muli64(&mut self, a: waffle::Value, b: waffle::Value) -> waffle::Value {
-        self.build_binary(waffle::Operator::I64Mul, waffle::Type::I64, a, b)
+        self.build_binary(waffle::Operator::I64Mul, a, b, &[waffle::Type::I64])
     }
 
     pub fn build_divi64(&mut self, a: waffle::Value, b: waffle::Value) -> waffle::Value {
-        self.build_binary(waffle::Operator::I64DivS, waffle::Type::I64, a, b)
+        self.build_binary(waffle::Operator::I64DivS, a, b, &[waffle::Type::I64])
     }
 
     pub fn build_arg0(&mut self) -> waffle::Value {
@@ -182,12 +276,45 @@ impl<'a> FunctionBuilder<'a> {
         )
     }
 
-    pub fn build_call(
+    pub fn build_eqi32(&mut self, a: waffle::Value, b: waffle::Value) -> waffle::Value {
+        self.build_binary(waffle::Operator::I32Eq, a, b, &[waffle::Type::I32])
+    }
+
+    pub fn build_storei32(
         &mut self,
-        f: waffle::Func,
-        sig: waffle::SignatureData,
-        args: &[waffle::Value],
+        ptr: waffle::Value,
+        value: waffle::Value,
+        offset: u32,
     ) -> waffle::Value {
+        self.build_binary_memop(
+            waffle::Operator::I32Store {
+                memory: self.memarg(0, offset),
+            },
+            ptr,
+            value,
+        )
+    }
+
+    pub fn build_loadi32(&mut self, ptr: waffle::Value, offset: u32) -> waffle::Value {
+        self.build_unary_memop(
+            waffle::Operator::I32Load {
+                memory: self.memarg(0, offset),
+            },
+            ptr,
+            Some(waffle::Type::I32),
+        )
+    }
+
+    pub fn build_global_get(&mut self, g: waffle::Global, typ: waffle::Type) -> waffle::Value {
+        self.build_nonary(waffle::Operator::GlobalGet { global_index: g }, &[typ])
+    }
+
+    pub fn build_global_set(&mut self, g: waffle::Global, val: waffle::Value) -> waffle::Value {
+        self.build_unary(waffle::Operator::GlobalSet { global_index: g }, val, &[])
+    }
+
+    pub fn build_call(&mut self, f: waffle::Func, args: &[waffle::Value]) -> waffle::Value {
+        let sig = self.mb.module.signatures[self.mb.module.funcs[f].sig()].clone();
         let argp_ref = self
             .body
             .arg_pool
@@ -210,6 +337,14 @@ impl<'a> FunctionBuilder<'a> {
         ));
         self.body.append_to_block(self.current_block, v);
         v
+    }
+
+    pub fn build_call_intrinsic(
+        &mut self,
+        i: &impl Intrinsic,
+        args: &[waffle::Value],
+    ) -> waffle::Value {
+        i.call(self, args)
     }
 
     pub fn build_output_select(
@@ -268,8 +403,70 @@ impl<'a> FunctionBuilder<'a> {
         );
     }
 
+    pub fn build_br(&mut self, target: waffle::Block, args: &[waffle::Value]) {
+        self.body.set_terminator(
+            self.current_block,
+            waffle::Terminator::Br {
+                target: waffle::BlockTarget {
+                    block: target,
+                    args: args.into(),
+                },
+            },
+        );
+    }
+
+    pub fn build_condbr(
+        &mut self,
+        cond: waffle::Value,
+        t: (waffle::Block, &[waffle::Value]),
+        f: (waffle::Block, &[waffle::Value]),
+    ) {
+        self.body.set_terminator(
+            self.current_block,
+            waffle::Terminator::CondBr {
+                cond,
+                if_true: waffle::BlockTarget {
+                    block: t.0,
+                    args: t.1.into(),
+                },
+                if_false: waffle::BlockTarget {
+                    block: f.0,
+                    args: f.1.into(),
+                },
+            },
+        );
+    }
+
+    pub fn build_select(
+        &mut self,
+        select: waffle::Value,
+        targets: &[(waffle::Block, &[waffle::Value])],
+        default: (waffle::Block, &[waffle::Value]),
+    ) {
+        let target_blocks = targets
+            .iter()
+            .map(|(b, args)| waffle::BlockTarget {
+                block: *b,
+                args: (*args).into(),
+            })
+            .collect::<Vec<_>>();
+        let default = waffle::BlockTarget {
+            block: default.0,
+            args: default.1.into(),
+        };
+        self.body.set_terminator(
+            self.current_block,
+            waffle::Terminator::Select {
+                value: select,
+                targets: target_blocks,
+                default,
+            },
+        );
+    }
+
     pub fn build(mut self) -> waffle::FuncDecl<'static> {
         self.body.recompute_edges();
+
         waffle::FuncDecl::Body(self.signature, self.name.unwrap_or("".into()), self.body)
     }
 }
