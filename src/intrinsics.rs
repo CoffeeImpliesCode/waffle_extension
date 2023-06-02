@@ -70,7 +70,7 @@ impl Intrinsic for MulI32 {
             fb.body.values[args[1]].ty(&fb.body.type_pool),
             Some(waffle::Type::I32)
         );
-        fb.build_muli64(args[0], args[1])
+        fb.build_muli32(args[0], args[1])
     }
 
     fn args(&self) -> Vec<waffle::Type> {
