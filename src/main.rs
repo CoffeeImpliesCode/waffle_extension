@@ -1,4 +1,5 @@
 #![allow(unused)]
+
 mod compiler;
 mod expr;
 mod function_builder;
@@ -17,7 +18,7 @@ use module_builder::ModuleBuilder;
 
 use rustyline::{error::ReadlineError, DefaultEditor};
 use wabt::Module;
-use wasmer::AsStoreRef;
+use wasmer::{AsStoreRef, ModuleMiddleware};
 
 type Mem = wasmer::FunctionEnv<Option<wasmer::Memory>>;
 type MemMut<'a> = wasmer::FunctionEnvMut<'a, Option<wasmer::Memory>>;
@@ -148,9 +149,10 @@ fn module_and_table() -> (waffle::Module<'static>, FunctionTable) {
 
     let display = build_display(&mut mb, sp, bp, fd_write);
     let displayln = build_displayln(&mut mb, sp, bp, fd_write);
-
+    let len = build_len(&mut mb);
     table.insert("display".into(), Function::User(display));
     table.insert("displayln".into(), Function::User(displayln));
+    table.insert("len".into(), Function::User(len));
 
     declare_intrinsic("+", AddI32, &mut table);
     declare_intrinsic("-", SubI32, &mut table);
@@ -241,11 +243,24 @@ fn build_displayln(
     f
 }
 
+fn build_len(mb: &mut ModuleBuilder) -> waffle::Func {
+    let mut fb = mb.function(
+        vec![waffle::Type::I32, waffle::Type::I32],
+        vec![waffle::Type::I32],
+        Some("len"),
+    );
+    let len = fb.build_arg1();
+    fb.build_return(&[len]);
+    let b = fb.build();
+    let f = mb.module.funcs.push(b);
+    f
+}
+
 fn build_readline(fb: &mut FunctionBuilder) -> waffle::Func {
     todo!()
 }
 
-fn repl() -> Result<()> {
+fn repl(ssa: bool, wat: bool) -> Result<()> {
     let mut rl = DefaultEditor::new()?;
 
     let mut i = 0;
@@ -264,17 +279,20 @@ fn repl() -> Result<()> {
             kind: waffle::ExportKind::Func(fun),
         });
         table.insert(name.clone(), Function::User(fun));
-        println!("{}", mb.module.display());
-        run(&mb.module, &*name)?;
+        if ssa {
+            println!("{}", mb.module.display());
+        }
+        run(&mb.module, &*name, wat)?;
     }
 }
 
-fn run(module: &waffle::Module, name: &str) -> Result<()> {
+fn run(module: &waffle::Module, name: &str, wat: bool) -> Result<()> {
     let wasm_bytes = module.to_wasm_bytes()?;
     waffle::wasmparser::validate(&wasm_bytes)?;
-    let wat = wabt::wasm2wat(&wasm_bytes)?;
-    println!("{wat}");
-
+    if wat {
+        let wat = wabt::wasm2wat(&wasm_bytes)?;
+        println!("{wat}");
+    }
     let mut store = wasmer::Store::default();
 
     let module = wasmer::Module::new(&store, wasm_bytes)?;
@@ -328,12 +346,31 @@ fn run(module: &waffle::Module, name: &str) -> Result<()> {
 fn main() -> Result<()> {
     println!(
         r#"
-    Welcome to Crèpe!
+    Welcome to Crêpe!
+    Arguments:
+        --ssa       Print SSA IR after each statement
+        --wat       Print WAT after each statement
     Possible syntax:
         (+ 1 2)
         (* 3 (/ 4 2))
         (displayln "Hello, World!")
     "#
     );
-    repl()
+
+    let mut ssa = false;
+    let mut wat = false;
+
+    let mut args = std::env::args();
+    for arg in args.into_iter().skip(1) {
+        if arg == "--ssa" {
+            ssa = true;
+        } else if arg == "--wat" {
+            wat = true;
+        } else {
+            println!("Unknown argument: {}", arg);
+            return Ok(());
+        }
+    }
+
+    repl(ssa, wat)
 }
